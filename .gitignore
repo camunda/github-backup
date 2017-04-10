@@ -1,3 +1,4 @@
 .env
 ./repositories
 ./20*
+./.idea

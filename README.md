@@ -4,7 +4,7 @@
 
 1) Copy .env-example to .env (make sure it is in the same directory as the binary) ```cp .env-example .env```
 2) Put all necessary secrets to .env file
-
+3) Put all organisations name into config.yml file
 
 ## Usage
 
