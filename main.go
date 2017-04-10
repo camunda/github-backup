@@ -89,10 +89,16 @@ func isDirectory(path string) bool {
 	return false
 }
 
-func uploadDirToS3(sess *session.Session, bucketName string, bucketPrefix string, dirPath string) {
+type GithubBackup struct {
+	config *Config
+	context context.Context
+	client *github.Client
+	wg         sync.WaitGroup
+}
+
+func (app *GithubBackup) uploadDirToS3(sess *session.Session, bucketName string, bucketPrefix string, dirPath string) {
 	fileList := []string{}
 	filepath.Walk(dirPath, func(path string, f os.FileInfo, err error) error {
-		fmt.Println("PATH ==> " + path)
 		if isDirectory(path) {
 			// Do nothing
 			return nil
@@ -102,14 +108,18 @@ func uploadDirToS3(sess *session.Session, bucketName string, bucketPrefix string
 		}
 	})
 
+	app.wg.Add(len(fileList))
 	for _, file := range fileList {
-		uploadFileToS3(sess, bucketName, bucketPrefix, file)
+		go app.uploadFileToS3(sess, bucketName, bucketPrefix, file)
 	}
+	app.wg.Wait()
 }
 
-func uploadFileToS3(sess *session.Session, bucketName string, bucketPrefix string, filePath string) {
-	fmt.Println("upload " + filePath + " to S3")
-	// An s3 service
+func (app *GithubBackup) uploadFileToS3(sess *session.Session, bucketName string, bucketPrefix string, filePath string) {
+	defer app.wg.Done()
+	fmt.Printf("[+] Spawning Upload routine: %s to S3.\n", filePath)
+
+	// An S3 service
 	s3Svc := s3.New(sess)
 	file, err := os.Open(filePath)
 	if err != nil {
@@ -119,7 +129,6 @@ func uploadFileToS3(sess *session.Session, bucketName string, bucketPrefix strin
 	defer file.Close()
 	var key string
 	if preserveDirStructureBool {
-		//fileDirectory, _ :=  //filepath.Abs(filePath)
 		key = bucketPrefix + filePath
 	} else {
 		key = bucketPrefix + path.Base(filePath)
@@ -138,18 +147,11 @@ func uploadFileToS3(sess *session.Session, bucketName string, bucketPrefix strin
 	}
 }
 
-type GithubBackup struct {
-	config *Config
-	context context.Context
-	client *github.Client
-	wg         sync.WaitGroup
-}
-
 func (app *GithubBackup) login() {
 	auth := github.BasicAuthTransport{
-		app.config.Username,
-		app.config.Password,
-		"", nil,
+		Username:app.config.Username,
+		Password: app.config.Password,
+		OTP: "", Transport: nil,
 	}
 	app.client = github.NewClient(auth.Client())
 	client.InstallProtocol("https", gitHttp.NewClient(auth.Client()))
@@ -177,6 +179,7 @@ func (app *GithubBackup) getRepositories(organisation string) ([]*github.Reposit
 
 func (app *GithubBackup) cloneRepository(cloneURL, path string) {
 	defer app.wg.Done()
+	fmt.Printf("[+] Spawning Clone routine: %s \n", cloneURL)
 
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		os.Mkdir(path, os.ModePerm)
@@ -253,19 +256,19 @@ func (app *GithubBackup) compress(source, target string) error {
 func (app *GithubBackup) start() {
 	backupTime := RenderTime(time.Now())
 
-	fmt.Println("######################################")
+	fmt.Println("############################################################################")
 	fmt.Printf("Starting a backup at %s.\n", backupTime)
 	fmt.Printf("Using config %+v\n", app.config)
-	fmt.Println("######################################")
+	fmt.Println("############################################################################")
 
 	app.login()
 	for _, org := range app.config.Organisations {
 		app.downloadAll(org)
 	}
 	os.Rename("repositories", backupTime)
-	uploadDirToS3(session.Must(session.NewSession()), app.config.S3Bucket, "", backupTime)
+	app.uploadDirToS3(session.Must(session.NewSession()), app.config.S3Bucket, "", backupTime)
 
-	os.RemoveAll(rootTmpDir)
+	//os.RemoveAll(rootTmpDir)
 	os.RemoveAll(backupTime)
 }
 

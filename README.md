@@ -1,5 +1,12 @@
 # Github Backup
 
+Small utility which will concurrently backup many GitHub repositories across multiple organizations.
+
+## Notes
+
+- If running in container make sure that container is not read-only.
+- Make sure that bucket exists on S3
+
 ## Setup
 
 1) Copy .env-example to .env (make sure it is in the same directory as the binary) ```cp .env-example .env```
@@ -14,6 +21,7 @@
 
 ## TODO
 
+[] Upload to S3 concurrently
 [] Create cleanup on S3
     - last 7 days
     - every week after 7 days just keep last one
