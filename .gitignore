@@ -1,4 +1,5 @@
 .env
-./repositories/
-./20*/
-./.idea/
+.idea/
+repositories/
+20*/
+

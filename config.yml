@@ -1,2 +1,7 @@
 organisations:
   - kawago
+  - camunda
+  - camunda-ci
+  - camunda-tngp
+  - camunda-internal
+  - camunda-consulting
