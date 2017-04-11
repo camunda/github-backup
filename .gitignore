@@ -1,5 +1,7 @@
 .env
-.idea/
+.idea/*
+bin/
+release/
 repositories/
 20*/
 
