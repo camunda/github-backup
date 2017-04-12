@@ -114,6 +114,11 @@ func (app *GithubBackup) uploadDirToS3(sess *session.Session, bucketName string,
 	})
 
 	app.wg.Add(len(fileList))
+
+	if len(fileList) == 0 {
+		panic("No repos got cloned.")
+	}
+
 	fmt.Printf("[+] Uploading %d repositories to S3.\n", len(fileList))
 	for _, file := range fileList {
 		go app.uploadFileToS3(sess, bucketName, bucketPrefix, file)
@@ -128,8 +133,15 @@ func (app *GithubBackup) uploadFileToS3(sess *session.Session, bucketName string
 	// An S3 service
 	s3Svc := s3.New(sess)
 	file, err := os.Open(filePath)
-	checkErr(err)
 	defer file.Close()
+	checkErr(err)
+	stat, err := file.Stat()
+	checkErr(err)
+	if stat.Size() == 0 {
+		fmt.Printf("[!] %s has size 0. Skipping upload", filePath)
+		return
+	}
+
 
 	var key string
 	if preserveDirStructureBool {
@@ -186,10 +198,17 @@ func (app *GithubBackup) cloneRepository(repo *github.Repository, clonePath stri
 	defer app.wg.Done()
 
 	fmt.Printf("[+] Trying to clone %s.\n", *repo.FullName)
-	cmd := exec.Command("git", "clone", "--mirror", *(repo.SSHURL), clonePath)
+
+	cloneUrl := *repo.CloneURL
+	credentialsUrl := fmt.Sprintf("https://%s:%s@%s",
+						os.Getenv("GITHUB_USERNAME"),
+						os.Getenv("GITHUB_PASSWORD"),
+						cloneUrl[8:])
+
+	cmd := exec.Command("git", "clone", "--mirror", credentialsUrl, clonePath)
 	if err := cmd.Run(); err != nil {
 		fmt.Println("[!] git error: ", err)
-		fmt.Println(">> git clone ", *repo.SSHURL, clonePath)
+		fmt.Println(">> git clone ", *repo.CloneURL, clonePath)
 	} else {
 		app.compress(clonePath, clonePath+"/../")
 		os.RemoveAll(clonePath)
@@ -203,7 +222,7 @@ func (app *GithubBackup) downloadAll(organisation string) {
 	app.wg.Add(len(repos))
 	for _, repo := range repos {
 		path := fmt.Sprintf(TMP_REPO_PATH, organisation, *repo.Name)
-		fmt.Printf("[+] Spawning GIT_CLONE routine: %s \n", *repo.SSHURL)
+		fmt.Printf("[+] Spawning GIT_CLONE routine: %s \n", *repo.CloneURL)
 		go app.cloneRepository(repo, path)
 	}
 	app.wg.Wait()

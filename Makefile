@@ -1,20 +1,21 @@
-VERSION=0.1
+VERSION=0.1.2
 BINARY_NAME=ghbackup
-
-run:
-	go run main.go
 
 build:
 	mkdir -p ./bin/
 	go build -o $(BINARY_NAME) .
 	mv $(BINARY_NAME) ./bin/
 
+run:
+	go run main.go
+
 release:
-	mkdir -p ./bin/ ./release/
-	go build -o ./bin/$(BINARY_NAME) .
-	tar czf ./release/$(BINARY_NAME)-$(VERSION).tar.gz ./bin/$(BACKUP_NAME)
-	#mv $(BINARY_NAME) ./bin/
-	#mv *tar.gz ./release/
+	mkdir -p bin/
+	go build -o bin/$(BINARY_NAME) .
+	cp config.yml bin/
+	tar czf $(BINARY_NAME)-$(VERSION).tar.gz bin/
+	mkdir -p release/ 
+	mv *.tar.gz release/
 
 test:
 	go test . -v
