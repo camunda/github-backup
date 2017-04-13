@@ -22,7 +22,8 @@ import (
 )
 
 const (
-	TMP_REPO_PATH = "repositories/%s/%s"
+	TMP_REPO_PATH = "%s/%s/%s"
+	DATETIME_LAYOUT = "02-01-2006-15:04:05"
 )
 
 var (
@@ -37,7 +38,8 @@ type Config struct {
 	AwsRegion string
 	Username string
 	Password string
-	Organisations []string
+	Organisations []string `yaml:"organisations"`
+	KeepLastBackupDays int `yaml:"keep_last_backup_days"`
 }
 
 func (c *Config) printAll() {
@@ -76,7 +78,11 @@ func checkErr(e error) {
 }
 
 func RenderTime(t time.Time) string {
-	return t.Format("20060102-15:04:05.000")
+	return t.Format(DATETIME_LAYOUT)
+}
+
+func ParseTime(t string) (time.Time, error) {
+	return time.Parse(DATETIME_LAYOUT, t)
 }
 
 func isDirectory(path string) bool {
@@ -99,39 +105,14 @@ type GithubBackup struct {
 	context context.Context
 	client *github.Client
 	wg         sync.WaitGroup
-}
-
-func (app *GithubBackup) uploadDirToS3(sess *session.Session, bucketName string, bucketPrefix string, dirPath string) {
-	fileList := []string{}
-	filepath.Walk(dirPath, func(path string, f os.FileInfo, err error) error {
-		if isDirectory(path) {
-			// Do nothing
-			return nil
-		} else {
-			fileList = append(fileList, path)
-			return nil
-		}
-	})
-
-	app.wg.Add(len(fileList))
-
-	if len(fileList) == 0 {
-		panic("No repos got cloned.")
-	}
-
-	fmt.Printf("[+] Uploading %d repositories to S3.\n", len(fileList))
-	for _, file := range fileList {
-		go app.uploadFileToS3(sess, bucketName, bucketPrefix, file)
-	}
-	app.wg.Wait()
+	s3svc  *s3.S3
+	createdAt string
 }
 
 func (app *GithubBackup) uploadFileToS3(sess *session.Session, bucketName string, bucketPrefix string, filePath string) {
 	defer app.wg.Done()
 	fmt.Printf("[+] Spawning S3UPLOAD routine: %s\n", filePath)
 
-	// An S3 service
-	s3Svc := s3.New(sess)
 	file, err := os.Open(filePath)
 	defer file.Close()
 	checkErr(err)
@@ -156,12 +137,38 @@ func (app *GithubBackup) uploadFileToS3(sess *session.Session, bucketName string
 		Key:    aws.String(key),        // Required
 		Body:   file,
 	}
-	_, err = s3Svc.PutObject(params)
+	_, err = app.s3svc.PutObject(params)
 
 	if err != nil {
-		fmt.Printf("Failed to upload data to %s/%s, %s\n",
-			bucketName, key, err.Error())
+		fmt.Printf("Failed to upload data to %s/%s, %s\n", bucketName, key, err.Error())
 		panic(err) // TODO: delete that backup try completely
+	}
+}
+
+func (app *GithubBackup) cleanup() {
+	fmt.Println("[+] Starting CLEANUP.")
+
+	os.RemoveAll(rootTmpDir)
+	os.RemoveAll(app.createdAt)
+
+	params := &s3.ListObjectsInput{
+		Bucket: aws.String(app.config.S3Bucket),
+	}
+	resp, _ := app.s3svc.ListObjects(params)
+
+	for _, key := range resp.Contents {
+		fmt.Println(*key.Key)
+		ts, _ := ParseTime(strings.Split(*key.Key, "/")[0])
+		if int(time.Since(ts).Hours())  > app.config.KeepLastBackupDays * 24 {
+			fmt.Printf("[+] Found an old backup. Deleting %s\n", *key.Key)
+			deleteParams := &s3.DeleteObjectInput{
+				Bucket: aws.String(app.config.S3Bucket),
+				Key: key.Key,
+			}
+			output, err := app.s3svc.DeleteObject(deleteParams)
+			checkErr(err)
+			fmt.Printf("\n\n[+/!] S3 Delete Object executed: %s\n\n", output)
+		}
 	}
 }
 
@@ -194,9 +201,7 @@ func (app *GithubBackup) getRepositories(organisation string) ([]*github.Reposit
 	return allRepos, nil
 }
 
-func (app *GithubBackup) cloneRepository(repo *github.Repository, clonePath string) {
-	defer app.wg.Done()
-
+func (app *GithubBackup) cloneRepository(repo *github.Repository, repoPath string) {
 	fmt.Printf("[+] Trying to clone %s.\n", *repo.FullName)
 
 	cloneUrl := *repo.CloneURL
@@ -205,13 +210,15 @@ func (app *GithubBackup) cloneRepository(repo *github.Repository, clonePath stri
 						os.Getenv("GITHUB_PASSWORD"),
 						cloneUrl[8:])
 
-	cmd := exec.Command("git", "clone", "--mirror", credentialsUrl, clonePath)
+	cmd := exec.Command("git", "clone", "--mirror", credentialsUrl, repoPath)
 	if err := cmd.Run(); err != nil {
 		fmt.Println("[!] git error: ", err)
-		fmt.Println(">> git clone ", *repo.CloneURL, clonePath)
+		fmt.Println(">> git clone ", *repo.CloneURL, repoPath)
 	} else {
-		app.compress(clonePath, clonePath+"/../")
-		os.RemoveAll(clonePath)
+		app.compress(repoPath, repoPath+"/../")
+		os.RemoveAll(repoPath)
+		repoBundle := fmt.Sprintf("%s.tar", repoPath)
+		app.uploadFileToS3(session.Must(session.NewSession()), app.config.S3Bucket, "", repoBundle)
 	}
 }
 
@@ -219,13 +226,12 @@ func (app *GithubBackup) downloadAll(organisation string) {
 	repos, err := app.getRepositories(organisation)
 	checkErr(err)
 
-	app.wg.Add(len(repos))
 	for _, repo := range repos {
-		path := fmt.Sprintf(TMP_REPO_PATH, organisation, *repo.Name)
+		path := fmt.Sprintf(TMP_REPO_PATH, app.createdAt, organisation, *repo.Name)
 		fmt.Printf("[+] Spawning GIT_CLONE routine: %s \n", *repo.CloneURL)
+		app.wg.Add(1)
 		go app.cloneRepository(repo, path)
 	}
-	app.wg.Wait()
 }
 
 func (app *GithubBackup) compress(source, target string) error {
@@ -268,13 +274,9 @@ func (app *GithubBackup) compress(source, target string) error {
 		})
 }
 
-
-
-func (app *GithubBackup) start() {
-	backupTime := RenderTime(time.Now())
-
+func (app GithubBackup) start() {
 	fmt.Println("############################################################################")
-	fmt.Printf("[+] Starting a backup at %s.\n", backupTime)
+	fmt.Printf("[+] Starting a backup at %s.\n", app.createdAt)
 	app.config.printAll()
 	fmt.Println("############################################################################")
 
@@ -282,13 +284,18 @@ func (app *GithubBackup) start() {
 	for _, org := range app.config.Organisations {
 		app.downloadAll(org)
 	}
-	os.Rename("repositories", backupTime)
-	app.uploadDirToS3(session.Must(session.NewSession()), app.config.S3Bucket, "", backupTime)
 
-	os.RemoveAll(rootTmpDir)
-	os.RemoveAll(backupTime)
+	app.wg.Wait()
+	app.cleanup()
 }
 
 func main() {
-	(&GithubBackup{readConfig(), context.Background(), nil, sync.WaitGroup{}}).start()
+	GithubBackup{
+		readConfig(),
+		context.Background(),
+		nil,
+		sync.WaitGroup{},
+		s3.New(session.Must(session.NewSession())),
+		RenderTime(time.Now()),
+	}.start()
 }

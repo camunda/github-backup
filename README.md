@@ -21,12 +21,7 @@ Small utility which will concurrently backup many GitHub repositories across mul
 
 ## TODO
 
-[] Create cleanup on S3
-    - last 7 days
-    - every week after 7 days just keep last one
-    - every month last week
-
-[] Create Jenkins job
+* Add more tests
 
 
 ## Troubleshooting
