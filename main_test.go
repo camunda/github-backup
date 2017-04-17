@@ -2,14 +2,12 @@ package main
 
 import (
 	"testing"
-	"context"
 	"fmt"
-	"sync"
 	"os"
 )
 
 func TestGithubBackupConstructor(t *testing.T) {
-	backup := &GithubBackup{readConfig(), context.Background(), nil, sync.WaitGroup{}}
+	backup := NewGithubBackup()
 	if backup == nil {
 		t.Fatal("Allocation failed.")
 	}
@@ -32,18 +30,18 @@ func TestConfig(t *testing.T) {
 }
 
 func TestCloneRepository(t *testing.T) {
-	backup := &GithubBackup{readConfig(), context.Background(), nil, sync.WaitGroup{}}
+	backup := NewGithubBackup()
 	backup.login()
 
 	repos, err := backup.getRepositories("camunda-ci")
 	checkErr(err)
 	backup.wg.Add(2)
 
-	path := fmt.Sprintf(TMP_REPO_PATH, "camunda-ci", *(repos[0].Name))
-	backup.cloneRepository(*(repos[0].CloneURL), path)
+	path := fmt.Sprintf(TMP_REPO_PATH, "test", "camunda-ci", *(repos[0].Name))
+	backup.cloneRepository(repos[0], path)
 
-	path2 := fmt.Sprintf(TMP_REPO_PATH, "camunda-ci", *(repos[1].Name))
-	backup.cloneRepository(*(repos[1].CloneURL), path2)
+	path2 := fmt.Sprintf(TMP_REPO_PATH, "test", "camunda-ci", *(repos[1].Name))
+	backup.cloneRepository(repos[1], path2)
 
-	os.RemoveAll(rootTmpDir)
+	os.RemoveAll("test")
 }

@@ -1,8 +1,11 @@
 keep_last_backup_days: 7
 organisations:
   - kawago
+  - flowing
+  - bpmn-io
   - camunda
   - camunda-ci
   - camunda-tngp
   - camunda-internal
   - camunda-consulting
+  - camunda-third-party

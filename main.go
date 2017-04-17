@@ -6,7 +6,6 @@ import (
 	"archive/tar"
 	"io"
 	"time"
-	"path"
 	"context"
 	"os"
 	"fmt"
@@ -21,16 +20,13 @@ import (
 	"os/exec"
 )
 
+// constants definitions used by the app.
 const (
 	TMP_REPO_PATH = "%s/%s/%s"
 	DATETIME_LAYOUT = "02-01-2006-15:04:05"
 )
 
-var (
-	rootTmpDir string = strings.Split(TMP_REPO_PATH, "/")[0]
-	preserveDirStructureBool bool = true
-)
-
+// Config is runtime configuration data used in GithubBackup.
 type Config struct {
 	S3Bucket string
 	AwsAccessKey string
@@ -42,6 +38,7 @@ type Config struct {
 	KeepLastBackupDays int `yaml:"keep_last_backup_days"`
 }
 
+// printAll is small helper method which will print parts of configuration to stdout.
 func (c *Config) printAll() {
 	fmt.Println("S3Bucket: ", c.S3Bucket)
 	fmt.Println("AwsAccessKey: ", c.AwsAccessKey)
@@ -50,6 +47,7 @@ func (c *Config) printAll() {
 	fmt.Println("Organisations: ", c.Organisations)
 }
 
+// readConfig will read .env file and config.yml to generate Config object for the runtime.
 func readConfig() *Config {
 	err := godotenv.Load()
 	checkErr(err)
@@ -71,35 +69,24 @@ func readConfig() *Config {
 	return &config
 }
 
+// checkErr will always panic on error.
 func checkErr(e error) {
 	if e != nil {
 		panic(e)
 	}
 }
 
+// RenderTime is helper which will convert time.Time object to string.
 func RenderTime(t time.Time) string {
 	return t.Format(DATETIME_LAYOUT)
 }
 
+// Parse time is helper which will convert string into a time.Time objects. Both helpers use DATETIME_LAYOUT constant.
 func ParseTime(t string) (time.Time, error) {
 	return time.Parse(DATETIME_LAYOUT, t)
 }
 
-func isDirectory(path string) bool {
-	fd, err := os.Stat(path)
-	if err != nil {
-		fmt.Println(err)
-		os.Exit(2)
-	}
-	switch mode := fd.Mode(); {
-	case mode.IsDir():
-		return true
-	case mode.IsRegular():
-		return false
-	}
-	return false
-}
-
+// GithubBackup contains all necessary elements to execute backup process.
 type GithubBackup struct {
 	config *Config
 	context context.Context
@@ -109,46 +96,32 @@ type GithubBackup struct {
 	createdAt string
 }
 
-func (app *GithubBackup) uploadFileToS3(sess *session.Session, bucketName string, bucketPrefix string, filePath string) {
+// uploadFileToS3 will upload specified file to S3 bucket.
+func (app *GithubBackup) uploadFileToS3(filePath string) {
 	defer app.wg.Done()
 	fmt.Printf("[+] Spawning S3UPLOAD routine: %s\n", filePath)
 
 	file, err := os.Open(filePath)
 	defer file.Close()
 	checkErr(err)
-	stat, err := file.Stat()
-	checkErr(err)
-	if stat.Size() == 0 {
-		fmt.Printf("[!] %s has size 0. Skipping upload", filePath)
-		return
-	}
 
+	stat, _ := file.Stat()
+	if stat.Size() == 0 { return } // file is empty. skip upload.
 
-	var key string
-	if preserveDirStructureBool {
-		key = bucketPrefix + filePath
-	} else {
-		key = bucketPrefix + path.Base(filePath)
-	}
-
-	// Upload the file to the s3 given bucket
-	params := &s3.PutObjectInput{
-		Bucket: aws.String(bucketName), // Required
-		Key:    aws.String(key),        // Required
-		Body:   file,
-	}
+	params := &s3.PutObjectInput{ Bucket: aws.String(app.config.S3Bucket), Key: aws.String(filePath), Body: file, }
 	_, err = app.s3svc.PutObject(params)
 
 	if err != nil {
-		fmt.Printf("Failed to upload data to %s/%s, %s\n", bucketName, key, err.Error())
+		fmt.Printf("Failed to upload data to %s/%s, %s\n", app.config.S3Bucket, filePath, err.Error())
 		panic(err) // TODO: delete that backup try completely
 	}
 }
 
+// cleanup method will delete old backups. Backup which are older then specified in config will be deleted.
 func (app *GithubBackup) cleanup() {
 	fmt.Println("[+] Starting CLEANUP.")
 
-	os.RemoveAll(rootTmpDir)
+	os.RemoveAll(strings.Split(TMP_REPO_PATH, "/")[0])
 	os.RemoveAll(app.createdAt)
 
 	params := &s3.ListObjectsInput{
@@ -162,8 +135,7 @@ func (app *GithubBackup) cleanup() {
 		if int(time.Since(ts).Hours())  > app.config.KeepLastBackupDays * 24 {
 			fmt.Printf("[+] Found an old backup. Deleting %s\n", *key.Key)
 			deleteParams := &s3.DeleteObjectInput{
-				Bucket: aws.String(app.config.S3Bucket),
-				Key: key.Key,
+				Bucket: aws.String(app.config.S3Bucket), Key: key.Key,
 			}
 			output, err := app.s3svc.DeleteObject(deleteParams)
 			checkErr(err)
@@ -172,15 +144,15 @@ func (app *GithubBackup) cleanup() {
 	}
 }
 
+// login method will use provided Github credentials and retrieve authentication token.
 func (app *GithubBackup) login() {
 	auth := github.BasicAuthTransport{
-		Username:app.config.Username,
-		Password: app.config.Password,
-		OTP: "", Transport: nil,
+		Username:app.config.Username, Password: app.config.Password, OTP: "", Transport: nil,
 	}
 	app.client = github.NewClient(auth.Client())
 }
 
+// getRepositories will fetch all repositories for specified organisations in config.
 func (app *GithubBackup) getRepositories(organisation string) ([]*github.Repository, error) {
 	opt := &github.RepositoryListByOrgOptions{
 		ListOptions: github.ListOptions{PerPage: 100},
@@ -201,13 +173,13 @@ func (app *GithubBackup) getRepositories(organisation string) ([]*github.Reposit
 	return allRepos, nil
 }
 
+// cloneRepository will download git repository from Github and compress them into a tarball.
 func (app *GithubBackup) cloneRepository(repo *github.Repository, repoPath string) {
 	fmt.Printf("[+] Trying to clone %s.\n", *repo.FullName)
 
 	cloneUrl := *repo.CloneURL
 	credentialsUrl := fmt.Sprintf("https://%s:%s@%s",
-						os.Getenv("GITHUB_USERNAME"),
-						os.Getenv("GITHUB_PASSWORD"),
+						os.Getenv("GITHUB_USERNAME"), os.Getenv("GITHUB_PASSWORD"),
 						cloneUrl[8:])
 
 	cmd := exec.Command("git", "clone", "--mirror", credentialsUrl, repoPath)
@@ -218,10 +190,11 @@ func (app *GithubBackup) cloneRepository(repo *github.Repository, repoPath strin
 		app.compress(repoPath, repoPath+"/../")
 		os.RemoveAll(repoPath)
 		repoBundle := fmt.Sprintf("%s.tar", repoPath)
-		app.uploadFileToS3(session.Must(session.NewSession()), app.config.S3Bucket, "", repoBundle)
+		app.uploadFileToS3(repoBundle)
 	}
 }
 
+// downloadAll will fetch all repository endpoints for a given organisation and clone them to filesystem.
 func (app *GithubBackup) downloadAll(organisation string) {
 	repos, err := app.getRepositories(organisation)
 	checkErr(err)
@@ -234,6 +207,7 @@ func (app *GithubBackup) downloadAll(organisation string) {
 	}
 }
 
+// compress will create tarballs of cloned repositories.
 func (app *GithubBackup) compress(source, target string) error {
 	filename := filepath.Base(source)
 	target = filepath.Join(target, fmt.Sprintf("%s.tar", filename))
@@ -274,7 +248,8 @@ func (app *GithubBackup) compress(source, target string) error {
 		})
 }
 
-func (app GithubBackup) start() {
+// start is a helper method which will execute the backup process.
+func (app *GithubBackup) start() {
 	fmt.Println("############################################################################")
 	fmt.Printf("[+] Starting a backup at %s.\n", app.createdAt)
 	app.config.printAll()
@@ -289,13 +264,18 @@ func (app GithubBackup) start() {
 	app.cleanup()
 }
 
-func main() {
-	GithubBackup{
+// NewGithubBackup is a construct function which will create new GithubBackup object with given attributes.
+func NewGithubBackup() *GithubBackup {
+	return &GithubBackup{
 		readConfig(),
 		context.Background(),
 		nil,
 		sync.WaitGroup{},
 		s3.New(session.Must(session.NewSession())),
 		RenderTime(time.Now()),
-	}.start()
+	}
+}
+
+func main() {
+	NewGithubBackup().start()
 }

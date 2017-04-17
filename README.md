@@ -22,7 +22,7 @@ Small utility which will concurrently backup many GitHub repositories across mul
 ## TODO
 
 * Add more tests
-
+  * Mock S3 upload
 
 ## Troubleshooting
 
