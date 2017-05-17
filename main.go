@@ -117,6 +117,18 @@ func (app *GithubBackup) uploadFileToS3(filePath string) {
 	}
 }
 
+func (app *GithubBackup) getS3Page(marker string) (*s3.ListObjectsOutput, error)  {
+	params := &s3.ListObjectsInput{
+		Bucket: aws.String(app.config.S3Bucket),
+	}
+
+	if len(marker) > 0 {
+		params.Marker = aws.String(marker)
+	}
+
+	return app.s3svc.ListObjects(params)
+}
+
 // cleanup method will delete old backups. Backup which are older then specified in config will be deleted.
 func (app *GithubBackup) cleanup() {
 	fmt.Println("[+] Starting CLEANUP.")
@@ -124,12 +136,23 @@ func (app *GithubBackup) cleanup() {
 	os.RemoveAll(strings.Split(TMP_REPO_PATH, "/")[0])
 	os.RemoveAll(app.createdAt)
 
-	params := &s3.ListObjectsInput{
-		Bucket: aws.String(app.config.S3Bucket),
-	}
-	resp, _ := app.s3svc.ListObjects(params)
+	var objRefs []*s3.Object
+	var marker string
 
-	for _, key := range resp.Contents {
+	for {
+		resp, _ := app.getS3Page(marker)
+		lastKey := resp.Contents[len(resp.Contents) - 1].Key
+		objRefs = append(objRefs, resp.Contents...)
+
+		if *resp.IsTruncated == true {
+			marker = *lastKey
+		} else {
+			break
+		}
+	}
+
+	fmt.Printf("[+] Found %d objects for cleanup.\n", len(objRefs))
+	for _, key := range objRefs {
 		fmt.Println(*key.Key)
 		ts, _ := ParseTime(strings.Split(*key.Key, "/")[0])
 		if int(time.Since(ts).Hours())  > app.config.KeepLastBackupDays * 24 {
@@ -197,7 +220,7 @@ func (app *GithubBackup) cloneRepository(repo *github.Repository, repoPath strin
 // downloadAll will fetch all repository endpoints for a given organisation and clone them to filesystem.
 func (app *GithubBackup) downloadAll(organisation string) {
 	repos, err := app.getRepositories(organisation)
-	checkErr(err)
+	if err != nil { return }
 
 	for _, repo := range repos {
 		path := fmt.Sprintf(TMP_REPO_PATH, app.createdAt, organisation, *repo.Name)
