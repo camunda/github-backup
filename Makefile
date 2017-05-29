@@ -1,4 +1,4 @@
-VERSION=0.1.4
+VERSION=0.1.5
 BINARY_NAME=ghbackup
 
 build:
@@ -11,7 +11,7 @@ run:
 
 release:
 	mkdir -p bin/
-	go build -o bin/$(BINARY_NAME) .
+	CGO_ENABLED=0 go build -a -installsuffix cgo -o bin/$(BINARY_NAME) .
 	cp config.yml bin/
 	tar czf $(BINARY_NAME)-$(VERSION).tar.gz bin/
 	mkdir -p release/ 
