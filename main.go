@@ -222,7 +222,7 @@ func (app *GithubBackup) cloneRepository(repo *github.Repository, repoPath strin
 		return
 	}
 
-	gitRepoCleanup := fmt.Sprintf("pushd %s && git remote rm origin && popd", repoPath)
+	gitRepoCleanup := fmt.Sprintf("cd %s && git remote rm origin", repoPath)
 	rmRemote := exec.Command("/bin/sh", "-c", gitRepoCleanup) // Don't backup credentials.
 	if err := rmRemote.Run(); err != nil {
 		fmt.Printf("[!] cannot remove remote: %+#v\n", err)
