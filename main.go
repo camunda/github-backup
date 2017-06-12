@@ -47,10 +47,19 @@ func (c *Config) printAll() {
 	fmt.Println("Organisations: ", c.Organisations)
 }
 
+func (c *Config) checkOrFail() {
+	dirty := len(c.AwsAccessKey) == 0 || len(c.AwsSecretAccessKey) == 0 || len(c.AwsRegion) == 0
+	dirty = dirty || len(c.S3Bucket) == 0 || len(c.Username) == 0 || len(c.Password) == 0
+
+	if dirty {
+		c.printAll()
+		panic("[!] I'm missing configuration.")
+	}
+}
+
 // readConfig will read .env file and config.yml to generate Config object for the runtime.
 func readConfig() *Config {
-	err := godotenv.Load()
-	checkErr(err)
+	godotenv.Load()
 
 	filename, _ := filepath.Abs("./config.yml")
 	yamlFile, err := ioutil.ReadFile(filename)
@@ -66,6 +75,7 @@ func readConfig() *Config {
 	config.Username = os.Getenv("GITHUB_USERNAME")
 	config.Password = os.Getenv("GITHUB_PASSWORD")
 
+	config.checkOrFail()
 	return &config
 }
 
@@ -209,12 +219,20 @@ func (app *GithubBackup) cloneRepository(repo *github.Repository, repoPath strin
 	if err := cmd.Run(); err != nil {
 		fmt.Println("[!] git error: ", err)
 		fmt.Println(">> git clone ", *repo.CloneURL, repoPath)
-	} else {
-		app.compress(repoPath, repoPath+"/../")
-		os.RemoveAll(repoPath)
-		repoBundle := fmt.Sprintf("%s.tar", repoPath)
-		app.uploadFileToS3(repoBundle)
+		return
 	}
+
+	gitRepoCleanup := fmt.Sprintf("pushd %s && git remote rm origin && popd", repoPath)
+	rmRemote := exec.Command("/bin/sh", "-c", gitRepoCleanup) // Don't backup credentials.
+	if err := rmRemote.Run(); err != nil {
+		fmt.Printf("[!] cannot remove remote: %+#v\n", err)
+	}
+
+	app.compress(repoPath, repoPath+"/../")
+	os.RemoveAll(repoPath)
+	repoBundle := fmt.Sprintf("%s.tar", repoPath)
+	app.uploadFileToS3(repoBundle)
+
 }
 
 // downloadAll will fetch all repository endpoints for a given organisation and clone them to filesystem.

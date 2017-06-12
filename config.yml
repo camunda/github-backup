@@ -1,6 +1,5 @@
 keep_last_backup_days: 7
 organisations:
-  - cawemo
   - flowing
   - bpmn-io
   - camunda
